@@ -16,9 +16,10 @@ from datetime import datetime, timedelta
 from django.contrib.auth.models import User  # Just to satisfy ModelViewSet queryset
 import requests
 from .models import FacebookProfile
-from .serializers import FacebookConnectSerializer, PostContentSerializer, AdCreateSerializer, CampaignCreateSerializer, CampaignUpdateSerializer, CampaignDeleteSerializer, CampaignToggleSerializer
+from .serializers import *
 from facebook_business.exceptions import FacebookRequestError
-
+import pytz
+from datetime import datetime, timedelta
 
 
 class FacebookManagerViewSet(viewsets.ModelViewSet):
@@ -516,6 +517,61 @@ class FacebookManagerViewSet(viewsets.ModelViewSet):
             return Response({"error": "Meta API Error", "details": e.body()}, status=400)
         except Exception as e:
             return Response({"error": str(e)}, status=500)
+        
+#===============================================================================================
+
+    @action(detail=False, methods=['get'])
+    def get_campaign_detail(self, request):
+        
+        # 1. Auth Check
+        user = request.user
+        if user.is_anonymous: user = User.objects.first()
+
+        try:
+            profile = FacebookProfile.objects.get(user=user)
+            access_token = profile.access_token
+        except FacebookProfile.DoesNotExist:
+            return Response({"error": "User not connected."}, status=400)
+
+        # 2. Input Check
+        campaign_id = request.query_params.get('campaign_id')
+        if not campaign_id:
+            return Response({"error": "Campaign ID is required"}, status=400)
+
+        try:
+            FacebookAdsApi.init(access_token=access_token)
+            
+            # 3. Define Fields (Humein kya kya dekhna hai?)
+            fields = [
+                'id',
+                'name',
+                'status',
+                'objective',
+                'buying_type',
+                'daily_budget',
+                'lifetime_budget',
+                'start_time',
+                'stop_time',
+                'special_ad_categories',
+                'account_id'
+            ]
+            
+            # 4. Fetch Data
+            campaign = Campaign(campaign_id).api_get(fields=fields)
+            
+            # Data ko normal dictionary mein convert karein
+            return Response(campaign.export_all_data())
+
+        except FacebookRequestError as e:
+            return Response({
+                "error": "Meta API Error",
+                "message": e.api_error_message(),
+                "details": e.body()
+            }, status=400)
+        except Exception as e:
+            return Response({"error": "Internal Server Error", "details": str(e)}, status=500)
+        
+
 #=================================================================================================
     @action(detail=False, methods=['post'])
     def update_campaign(self, request):
@@ -709,6 +765,9 @@ class FacebookManagerViewSet(viewsets.ModelViewSet):
         except Exception as e:
             return Response({"error": "Internal Server Error", "details": str(e)}, status=500)
         
+
+#=================================================================================================
+
     @action(detail=False, methods=['post'])
     def toggle_campaign_status(self, request):
         
@@ -761,160 +820,316 @@ class FacebookManagerViewSet(viewsets.ModelViewSet):
         except Exception as e:
             return Response({"error": "Internal Server Error", "details": str(e)}, status=500)
    
+#=================================================================================================
+
     @action(detail=False, methods=['post'])
     def create_ad_set(self, request):
+        
+        # 1. Auth Check
         user = request.user
         if user.is_anonymous: user = User.objects.first()
 
         try:
             profile = FacebookProfile.objects.get(user=user)
-            token = profile.access_token
+            access_token = profile.access_token
         except FacebookProfile.DoesNotExist:
             return Response({"error": "User not connected."}, status=400)
 
-        FacebookAdsApi.init(access_token=token)
-
-        # 1. Inputs
-        ad_account_id = request.data.get('ad_account_id')
-        campaign_id = request.data.get('campaign_id')
-        name = request.data.get('name', 'New Ad Set')
-        daily_budget = request.data.get('daily_budget', '100000')
+        # 2. Validation
+        serializer = AdSetCreateSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
         
-        geo_location = request.data.get('geo_locations', {"countries": ["PK"]})
-        age_min = request.data.get('age_min', 18)
-        age_max = request.data.get('age_max', 65)
-
-        if not ad_account_id or not campaign_id:
-            return Response({"error": "Ad Account ID and Campaign ID are required"}, status=400)
-
+        data = serializer.validated_data
+        
         try:
-            account = AdAccount(ad_account_id)
+            FacebookAdsApi.init(access_token=access_token)
+            account = AdAccount(data['ad_account_id'])
+        
+            # Fetch Timezone
+            account_details = account.api_get(fields=['timezone_name'])
+            tz_name = account_details.get('timezone_name', 'UTC')
+            local_tz = pytz.timezone(tz_name)
             
-            # Start Time: 10 min from now
-            start_time = datetime.now() + timedelta(minutes=10)
-            
-            params = {
-                'name': name,
-                'campaign_id': campaign_id,
-                'daily_budget': daily_budget,
-                'billing_event': 'IMPRESSIONS',
-                'optimization_goal': 'LINK_CLICKS',
-                'bid_strategy': 'LOWEST_COST_WITHOUT_CAP',
-                'start_time': start_time.strftime('%Y-%m-%dT%H:%M:%S%z'),
-                'status': 'PAUSED',
-                'targeting': {
-                    'geo_locations': geo_location,
-                    'age_min': age_min,
-                    'age_max': age_max,
-                    'publisher_platforms': ['facebook', 'instagram'],
-                    'device_platforms': ['mobile', 'desktop'],
-                    
-                    # --- FIX: Advantage+ Audience Flag ---
-                    'targeting_automation': {
-                        'advantage_audience': 0  # 0 = Manual Control (Strict), 1 = AI Auto
-                    }
-                }
-            }
+            # Start Time
+            if data.get('start_time'):
+                start_time = data['start_time'].astimezone(local_tz)
+            else:
+                start_time = datetime.now(local_tz) + timedelta(minutes=15)
 
+            # Campaign Budget Check
+            campaign = Campaign(data['campaign_id'])
+            camp_data = campaign.api_get(fields=['daily_budget', 'lifetime_budget', 'buying_type'])
+            is_campaign_cbo = 'daily_budget' in camp_data or 'lifetime_budget' in camp_data
+        
+            # --- 📝 STEP 3: BASE PARAMETERS ---
+            params = {
+                'name': data['name'],
+                'campaign_id': data['campaign_id'],
+                'status': data['status'],
+                'start_time': start_time.strftime('%Y-%m-%dT%H:%M:%S%z'),
+                'billing_event': data['billing_event'],
+                'optimization_goal': data['optimization_goal'],
+                # ❌ REMOVED: 'bid_strategy' yahan nahi hona chahiye
+            }
+            
+            # End Time
+            if data.get('end_time'):
+                end_time = data['end_time'].astimezone(local_tz)
+                params['end_time'] = end_time.strftime('%Y-%m-%dT%H:%M:%S%z')
+
+            # Budget Logic
+            if is_campaign_cbo:
+                print(f"ℹ️ Campaign {data['campaign_id']} is CBO. Ignoring Ad Set budget.")
+            else:
+                if data.get('daily_budget'):
+                    params['daily_budget'] = int(data['daily_budget'] * 100)
+                elif data.get('lifetime_budget'):
+                    params['lifetime_budget'] = int(data['lifetime_budget'] * 100)
+                else:
+                    return Response({
+                        "error": "Budget Missing",
+                        "message": "This Campaign is not CBO. You MUST provide a Daily or Lifetime budget."
+                    }, status=status.HTTP_400_BAD_REQUEST)
+
+            # --- 🎯 STEP 4: TARGETING ---
+            targeting = {
+                'geo_locations': data['geo_locations'],
+                'age_min': data['age_min'],
+                'age_max': data['age_max'],
+                'publisher_platforms': data['publisher_platforms'],
+                'device_platforms': data['device_platforms'],
+                'targeting_automation': {'advantage_audience': 0}
+            }
+            
+            # Gender
+            if data.get('genders'):
+                targeting['genders'] = data['genders']
+
+            # Interests
+            if data.get('interest_ids'):
+                formatted_interests = []
+                for i_id in data['interest_ids']:
+                    formatted_interests.append({'id': i_id, 'name': 'Unknown'})
+                targeting['flexible_spec'] = [{'interests': formatted_interests}]
+
+            params['targeting'] = targeting
+
+            # ✅ BIDDING LOGIC (Fixed: Removed duplicate block)
+            # Sirf tab strategy lagayenge jab user ne paisa (bid_amount) diya ho
+            if data.get('bid_amount'):
+                params['bid_amount'] = data['bid_amount']
+                params['bid_strategy'] = 'COST_CAP'
+
+            # # --- 🚀 STEP 5: EXECUTE ---
+            # print(f"🚀 Creating Ad Set with Params: {params}") # Console main check karein k strategy to nahi ja rahi
             adset = account.create_ad_set(params=params)
 
             return Response({
                 "message": "Ad Set Created Successfully!",
                 "adset_id": adset['id'],
-                "adset_name": name,
-                "campaign_id": campaign_id
-            })
+                "name": data['name'],
+                "status": data['status'],
+                "cbo_mode": is_campaign_cbo,
+                "start_time": params['start_time']
+            }, status=status.HTTP_201_CREATED)
+
+        except FacebookRequestError as e:
+            return Response({
+                "error": "Meta API Error",
+                "message": e.api_error_message(),
+                "code": e.api_error_code(),
+                "details": e.body()
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        except Exception as e:
+            return Response({"error": "Internal Server Error", "details": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        
+#=================================================================================================
+
+    @action(detail=False, methods=['get'])
+    def search_interests(self, request):
+        
+        # 1. Inputs
+        query = request.query_params.get('q')
+        ad_account_id = request.query_params.get('ad_account_id')
+
+        
+        
+        user = request.user
+        if user.is_anonymous: user = User.objects.first()
+             # ... Fetch first ad account logic here ...
+
+        if not query:
+            return Response([]) # Empty list agar kuch type nahi kia
+
+        try:
+            # ... Auth setup ...
+            profile = FacebookProfile.objects.get(user=user)
+            FacebookAdsApi.init(access_token=profile.access_token)
+
+            # 2. Search Logic
+            params = {
+                'type': 'adinterest',
+                'q': query,
+                'limit': 10,  # Dropdown k liye 10 results kafi hain
+                'locale': 'en_US'
+            }
+            
+            # Agar ad_account_id abhi bhi nahi mili to error
+            if not ad_account_id:
+                 return Response({"error": "Ad Account ID required for search"}, status=400)
+
+            results = AdAccount(ad_account_id).get_targeting_search(params=params)
+            
+            # 3. Clean Format for Dropdown
+            data = []
+            for item in results:
+                data.append({
+                    'value': item['id'],   
+                    'label': item['name'], 
+                    'size': item.get('audience_size_lower_bound') 
+                })
+                
+            return Response(data) 
 
         except Exception as e:
             return Response({"error": str(e)}, status=500)
         
+#=================================================================================================
 
     @action(detail=False, methods=['post'])
     def update_ad_set(self, request):
+        
+        # 1. Auth Check
         user = request.user
         if user.is_anonymous: user = User.objects.first()
 
         try:
             profile = FacebookProfile.objects.get(user=user)
-            token = profile.access_token
+            access_token = profile.access_token
         except FacebookProfile.DoesNotExist:
             return Response({"error": "User not connected."}, status=400)
 
-        FacebookAdsApi.init(access_token=token)
-
-        # 1. Required Input
-        adset_id = request.data.get('adset_id')
-        if not adset_id:
-            return Response({"error": "Ad Set ID is required"}, status=400)
-
-        # 2. Optional Inputs (Jo Create mein use kiye thay)
-        name = request.data.get('name')
-        daily_budget = request.data.get('daily_budget') # Cents (e.g., 500 = $5)
-        start_time = request.data.get('start_time')
-        end_time = request.data.get('end_time')
-        status = request.data.get('status') # ACTIVE, PAUSED
-        bid_amount = request.data.get('bid_amount')
+        # 2. Validation
+        serializer = AdSetUpdateSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=400)
         
-        # Targeting Fields
-        age_min = request.data.get('age_min')
-        age_max = request.data.get('age_max')
-        genders = request.data.get('genders') # [1] for Male, [2] for Female
-        countries = request.data.get('countries') # ['US', 'PK']
-        interests = request.data.get('interests') # List of Interest IDs
+        data = serializer.validated_data
+        adset_id = data['adset_id']
 
         try:
+            FacebookAdsApi.init(access_token=access_token)
             adset = AdSet(adset_id)
+
+            # --- 📥 STEP 1: FETCH CURRENT DATA ---
+            current_adset = adset.api_get(fields=['targeting', 'name', 'start_time', 'account_id', 'campaign_id'])
+            
+            # Account ID Fix
+            raw_account_id = current_adset['account_id']
+            if not raw_account_id.startswith('act_'):
+                account_id = f"act_{raw_account_id}"
+            else:
+                account_id = raw_account_id
+
+            # Timezone Fetch
+            account = AdAccount(account_id)
+            account_details = account.api_get(fields=['timezone_name'])
+            tz_name = account_details.get('timezone_name', 'UTC')
+            
+            import pytz
+            local_tz = pytz.timezone(tz_name)
+
+            # --- 💰 STEP 2: CBO CHECK ---
+            campaign_id = current_adset['campaign_id']
+            campaign = Campaign(campaign_id)
+            camp_data = campaign.api_get(fields=['daily_budget', 'lifetime_budget'])
+            
+            is_cbo = 'daily_budget' in camp_data or 'lifetime_budget' in camp_data
+
+            # Check Conflict
+            user_trying_to_set_budget = 'daily_budget' in data or 'lifetime_budget' in data
+
+            if is_cbo and user_trying_to_set_budget:
+                return Response({
+                    "error": "Budget Conflict",
+                    "message": "This Campaign is using Campaign Budget Optimization (CBO). You cannot set a budget at the Ad Set level.",
+                    "solution": "Please update the Campaign Budget instead, or remove the budget from your request."
+                }, status=400)
+
+            # --- 🔄 STEP 3: BUILD PARAMS ---
             params = {}
 
-            # --- Basic Fields Update ---
-            if name: params['name'] = name
-            if daily_budget: params['daily_budget'] = daily_budget
-            if start_time: params['start_time'] = start_time
-            if end_time: params['end_time'] = end_time
-            if status: 
-                if status not in ['ACTIVE', 'PAUSED', 'ARCHIVED']:
-                    return Response({"error": "Invalid Status"}, status=400)
-                params['status'] = status
-            if bid_amount: params['bid_amount'] = bid_amount
+            if 'name' in data: params['name'] = data['name']
+            if 'status' in data: params['status'] = data['status']
+            
+            if 'daily_budget' in data:
+                params['daily_budget'] = int(data['daily_budget'] * 100)
+            
+            if 'lifetime_budget' in data:
+                params['lifetime_budget'] = int(data['lifetime_budget'] * 100)
+            
+            if 'bid_amount' in data:
+                params['bid_amount'] = data['bid_amount']
 
-            # --- Targeting Update Logic ---
-            # Agar user ne targeting ka koi bhi hissa bheja hai, to hum targeting update karenge
-            if any([age_min, age_max, genders, countries, interests]):
-                
-                # Note: Behtar ye hota hai k pehle purani targeting fetch karein, 
-                # lekin simplicity k liye hum yahan nayi targeting bana rahy hain.
-                
-                targeting_spec = {
-                    'geo_locations': {'countries': countries if countries else ['PK']},
-                }
-                
-                if age_min: targeting_spec['age_min'] = int(age_min)
-                if age_max: targeting_spec['age_max'] = int(age_max)
-                if genders: targeting_spec['genders'] = genders
-                
-                if interests:
-                    # Interests ka structure complex hota hai
-                    targeting_spec['flexible_spec'] = [{
-                        'interests': [{'id': i_id, 'name': 'Interest'} for i_id in interests]
-                    }]
+            # Time Updates
+            if 'start_time' in data:
+                params['start_time'] = data['start_time'].astimezone(local_tz).strftime('%Y-%m-%dT%H:%M:%S%z')
+            if 'end_time' in data:
+                params['end_time'] = data['end_time'].astimezone(local_tz).strftime('%Y-%m-%dT%H:%M:%S%z')
 
-                params['targeting'] = targeting_spec
+            # --- 🎯 STEP 4: TARGETING MERGE (FIXED) ---
+            targeting_fields = ['geo_locations', 'age_min', 'age_max', 'genders', 'interest_ids']
+            has_targeting_change = any(field in data for field in targeting_fields)
 
-            # --- Update Request ---
+            if has_targeting_change:
+                # 🛑 FIX: Convert Meta Object to Standard Python Dictionary
+                raw_targeting = current_adset.get('targeting', {})
+                
+                # Agar ye Meta ka Object hai, to 'export_all_data' use karo, warna dict() cast karo
+                if hasattr(raw_targeting, 'export_all_data'):
+                    new_targeting = raw_targeting.export_all_data()
+                else:
+                    new_targeting = dict(raw_targeting)
+
+                # Ab hum isay modify kar sakte hain
+                if 'geo_locations' in data: new_targeting['geo_locations'] = data['geo_locations']
+                if 'age_min' in data: new_targeting['age_min'] = data['age_min']
+                if 'age_max' in data: new_targeting['age_max'] = data['age_max']
+                if 'genders' in data: new_targeting['genders'] = data['genders']
+
+                if 'interest_ids' in data:
+                    formatted_interests = []
+                    for i_id in data['interest_ids']:
+                        formatted_interests.append({'id': i_id, 'name': 'Unknown'})
+                    new_targeting['flexible_spec'] = [{'interests': formatted_interests}]
+
+                params['targeting'] = new_targeting
+
+            # --- 🚀 STEP 5: EXECUTE ---
             if params:
+                print(f"🔄 Updating Ad Set {adset_id} with params: {params}")
                 adset.remote_update(params=params)
+                
                 return Response({
-                    "message": "Ad Set Updated Successfully!", 
+                    "message": "Ad Set Updated Successfully!",
                     "id": adset_id,
-                    "updates": params
+                    "updated_fields": list(params.keys())
                 })
             else:
                 return Response({"message": "No changes provided."}, status=200)
 
+        except FacebookRequestError as e:
+            return Response({
+                "error": "Meta API Error",
+                "message": e.api_error_message(),
+                "details": e.body()
+            }, status=400)
         except Exception as e:
-            return Response({"error": str(e)}, status=500)
+            return Response({"error": "Internal Server Error", "details": str(e)}, status=500)
         
-
+#=================================================================================================
     @action(detail=False, methods=['post'])
     def delete_ad_set(self, request):
         user = request.user
@@ -945,6 +1160,123 @@ class FacebookManagerViewSet(viewsets.ModelViewSet):
 
         except Exception as e:
             return Response({"error": str(e)}, status=500)
+    
+#================================================================================================= 
+
+    @action(detail=False, methods=['get'])
+    def get_ad_sets(self, request):
+        user = request.user
+        if user.is_anonymous: user = User.objects.first()
+
+        try:
+            profile = FacebookProfile.objects.get(user=user)
+            token = profile.access_token
+        except FacebookProfile.DoesNotExist:
+            return Response({"error": "User not connected."}, status=400)
+
+        FacebookAdsApi.init(access_token=token)
+
+        campaign_id = request.query_params.get('campaign_id')
+
+        if not campaign_id:
+            return Response({"error": "Campaign ID is required"}, status=400)
+
+        try:
+            campaign = Campaign(campaign_id)
+            
+            # Ad Set k zaroori fields
+            fields = [
+                AdSet.Field.id,
+                AdSet.Field.name,
+                AdSet.Field.status,
+                AdSet.Field.daily_budget,
+                AdSet.Field.targeting,
+                AdSet.Field.start_time,
+                AdSet.Field.end_time,
+                AdSet.Field.billing_event,
+            ]
+            
+            # API Call: Campaign se Ad Sets mangwana
+            ad_sets = campaign.get_ad_sets(fields=fields)
+            
+            data = []
+            for adset in ad_sets:
+                data.append({
+                    'id': adset.get('id'),
+                    'name': adset.get('name'),
+                    'status': adset.get('status'),
+                    'daily_budget': adset.get('daily_budget'),
+                    'targeting': adset.get('targeting'), # Age, Location waghaira
+                    'start_time': adset.get('start_time'),
+                })
+
+            return Response({"campaign_id": campaign_id, "count": len(data), "ad_sets": data})
+
+        except Exception as e:
+            return Response({"error": str(e)}, status=500)
+        
+#=================================================================================================
+
+    @action(detail=False, methods=['get'])
+    def get_ad_set_detail(self, request):
+       
+        # 1. Auth Check
+        user = request.user
+        if user.is_anonymous: user = User.objects.first()
+
+        try:
+            profile = FacebookProfile.objects.get(user=user)
+            access_token = profile.access_token
+        except FacebookProfile.DoesNotExist:
+            return Response({"error": "User not connected."}, status=400)
+
+        # 2. Input Check
+        adset_id = request.query_params.get('adset_id')
+        if not adset_id:
+            return Response({"error": "Ad Set ID is required"}, status=400)
+
+        try:
+            FacebookAdsApi.init(access_token=access_token)
+            
+            # 3. Define Fields (Humein Ad Set k baare mein sab kuch janna hai)
+            fields = [
+                'id',
+                'name',
+                'status',
+                'campaign_id',
+                'daily_budget',
+                'lifetime_budget',
+                'start_time',
+                'end_time',
+                'optimization_goal',
+                'billing_event',
+                'bid_amount',
+                'targeting', # <-- Sabse important field 🎯
+                'promoted_object',
+                'created_time',
+                'updated_time'
+            ]
+            
+            adset_data = AdSet(adset_id).api_get(fields=fields)
+            
+            
+            data = adset_data.export_all_data()
+
+            
+
+            return Response(data)
+
+        except FacebookRequestError as e:
+            return Response({
+                "error": "Meta API Error",
+                "message": e.api_error_message(),
+                "details": e.body()
+            }, status=400)
+        except Exception as e:
+            return Response({"error": "Internal Server Error", "details": str(e)}, status=500)
+
+#=================================================================================================
+
     @action(detail=False, methods=['post'])
     def create_ad_creative(self, request):
 
@@ -1038,61 +1370,6 @@ class FacebookManagerViewSet(viewsets.ModelViewSet):
             return Response({"error": str(e)}, status=500)
         
     
-        
-
-    @action(detail=False, methods=['get'])
-    def get_ad_sets(self, request):
-        user = request.user
-        if user.is_anonymous: user = User.objects.first()
-
-        try:
-            profile = FacebookProfile.objects.get(user=user)
-            token = profile.access_token
-        except FacebookProfile.DoesNotExist:
-            return Response({"error": "User not connected."}, status=400)
-
-        FacebookAdsApi.init(access_token=token)
-
-        campaign_id = request.query_params.get('campaign_id')
-
-        if not campaign_id:
-            return Response({"error": "Campaign ID is required"}, status=400)
-
-        try:
-            campaign = Campaign(campaign_id)
-            
-            # Ad Set k zaroori fields
-            fields = [
-                AdSet.Field.id,
-                AdSet.Field.name,
-                AdSet.Field.status,
-                AdSet.Field.daily_budget,
-                AdSet.Field.targeting,
-                AdSet.Field.start_time,
-                AdSet.Field.end_time,
-                AdSet.Field.billing_event,
-            ]
-            
-            # API Call: Campaign se Ad Sets mangwana
-            ad_sets = campaign.get_ad_sets(fields=fields)
-            
-            data = []
-            for adset in ad_sets:
-                data.append({
-                    'id': adset.get('id'),
-                    'name': adset.get('name'),
-                    'status': adset.get('status'),
-                    'daily_budget': adset.get('daily_budget'),
-                    'targeting': adset.get('targeting'), # Age, Location waghaira
-                    'start_time': adset.get('start_time'),
-                })
-
-            return Response({"campaign_id": campaign_id, "count": len(data), "ad_sets": data})
-
-        except Exception as e:
-            return Response({"error": str(e)}, status=500)
-        
-
 #====================================================================================
     @action(detail=False, methods=['post'])
     def create_ad(self, request):

@@ -194,3 +194,129 @@ class CampaignToggleSerializer(serializers.Serializer):
         required=True,
         help_text="Send 'ACTIVE' to turn on, 'PAUSED' to turn off."
     )
+
+
+
+class AdSetCreateSerializer(serializers.Serializer):
+    
+    # --- CONSTANTS (Dropdown Options) --
+    
+    STATUS_CHOICES = [
+        ('ACTIVE', 'Active'),
+        ('PAUSED', 'Paused')
+    ]
+
+    GENDER_CHOICES = [
+        (1, 'Male'),
+        (2, 'Female')
+    ]
+
+    PLATFORM_CHOICES = [
+        ('facebook', 'Facebook'),
+        ('instagram', 'Instagram'),
+        ('audience_network', 'Audience Network'),
+        ('messenger', 'Messenger')
+    ]
+
+    GOAL_CHOICES = [
+        ('LINK_CLICKS', 'Link Clicks'),
+        ('IMPRESSIONS', 'Impressions'),
+        ('REACH', 'Daily Unique Reach'),
+        ('LANDING_PAGE_VIEWS', 'Landing Page Views')
+    ]
+
+    BILLING_CHOICES = [
+        ('IMPRESSIONS', 'Impressions (CPM)'),
+        ('LINK_CLICKS', 'Link Clicks (CPC)')
+    ]
+
+    # --- FIELDS ---
+
+    # 1. Identity
+    ad_account_id = serializers.CharField(required=True)
+    campaign_id = serializers.CharField(required=True)
+    name = serializers.CharField(required=True)
+    
+    # ✅ Dropdown 1: Status
+    status = serializers.ChoiceField(choices=STATUS_CHOICES, default='PAUSED')
+
+    # 2. Budget & Schedule
+    daily_budget = serializers.FloatField(required=False, min_value=1.0)
+    lifetime_budget = serializers.FloatField(required=False, min_value=1.0)
+    start_time = serializers.DateTimeField(required=False)
+    end_time = serializers.DateTimeField(required=False)
+
+    # 3. Targeting
+    geo_locations = serializers.JSONField(
+        required=True, 
+        initial={"countries": ["PK"]},
+        help_text="Example: {'countries': ['PK']} or {'cities': [{'key': '...'}]}"
+    )
+    
+    age_min = serializers.IntegerField(default=18, min_value=13)
+    age_max = serializers.IntegerField(default=65, max_value=65)
+
+    # ✅ Dropdown 2: Gender (Multi-Select)
+    # ListField k andar ChoiceField lagaya hai taake list k andar bhi validation ho
+    genders = serializers.ListField(
+        child=serializers.ChoiceField(choices=GENDER_CHOICES),
+        required=False,
+        help_text="[1] for Male, [2] for Female"
+    )
+    
+    interest_ids = serializers.ListField(child=serializers.CharField(), required=False)
+
+    # ✅ Dropdown 3: Platforms (Multi-Select)
+    publisher_platforms = serializers.ListField(
+        child=serializers.ChoiceField(choices=PLATFORM_CHOICES),
+        default=['facebook', 'instagram']
+    )
+    
+    device_platforms = serializers.ListField(
+        child=serializers.ChoiceField(choices=['mobile', 'desktop']),
+        default=['mobile', 'desktop']
+    )
+
+    # ✅ Dropdown 4: Optimization Goals
+    optimization_goal = serializers.ChoiceField(choices=GOAL_CHOICES, default='LINK_CLICKS')
+    billing_event = serializers.ChoiceField(choices=BILLING_CHOICES, default='IMPRESSIONS')
+
+    # --- VALIDATION ---
+    def validate(self, data):
+        # ... (Wohi purani validation logic budget wali) ...
+        daily = data.get('daily_budget')
+        lifetime = data.get('lifetime_budget')
+        end = data.get('end_time')
+
+        if daily and lifetime:
+            raise serializers.ValidationError("Cannot set both Daily and Lifetime budget.")
+        if lifetime and not end:
+            raise serializers.ValidationError("Lifetime Budget requires an End Time.")
+            
+        return data
+    
+
+
+class AdSetUpdateSerializer(serializers.Serializer):
+    # ID is Mandatory
+    adset_id = serializers.CharField(required=True)
+
+    # Optional Fields (User might send only one of these)
+    name = serializers.CharField(required=False)
+    status = serializers.ChoiceField(choices=['ACTIVE', 'PAUSED'], required=False)
+    
+    # Budget & Schedule
+    daily_budget = serializers.FloatField(required=False, min_value=1.0)
+    lifetime_budget = serializers.FloatField(required=False, min_value=1.0)
+    start_time = serializers.DateTimeField(required=False)
+    end_time = serializers.DateTimeField(required=False)
+    
+    # Targeting (Optional Updates)
+    geo_locations = serializers.JSONField(required=False)
+    age_min = serializers.IntegerField(required=False, min_value=13)
+    age_max = serializers.IntegerField(required=False, max_value=65)
+    genders = serializers.ListField(child=serializers.IntegerField(), required=False)
+    interest_ids = serializers.ListField(child=serializers.CharField(), required=False)
+    
+    # Bid Amount (If manual bidding is used)
+    bid_amount = serializers.IntegerField(required=False)
