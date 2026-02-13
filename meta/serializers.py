@@ -265,6 +265,8 @@ class AdSetCreateSerializer(serializers.Serializer):
     )
     
     interest_ids = serializers.ListField(child=serializers.CharField(), required=False)
+    behavior_ids = serializers.ListField(child=serializers.CharField(), required=False)    # <-- NEW
+    life_event_ids = serializers.ListField(child=serializers.CharField(), required=False)
 
     # ✅ Dropdown 3: Platforms (Multi-Select)
     publisher_platforms = serializers.ListField(
@@ -280,6 +282,8 @@ class AdSetCreateSerializer(serializers.Serializer):
     # ✅ Dropdown 4: Optimization Goals
     optimization_goal = serializers.ChoiceField(choices=GOAL_CHOICES, default='LINK_CLICKS')
     billing_event = serializers.ChoiceField(choices=BILLING_CHOICES, default='IMPRESSIONS')
+
+    bid_amount = serializers.IntegerField(required=False)
 
     # --- VALIDATION ---
     def validate(self, data):
