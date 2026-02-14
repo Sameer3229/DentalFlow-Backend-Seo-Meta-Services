@@ -158,8 +158,8 @@ class CampaignUpdateSerializer(serializers.Serializer):
 
     # --- FINANCIALS ---
     spend_cap = serializers.FloatField(required=False, min_value=1.0)
-    daily_budget = serializers.FloatField(required=False, min_value=1.0)
-    lifetime_budget = serializers.FloatField(required=False, min_value=1.0)
+    daily_budget = serializers.FloatField(required=False, min_value=0)
+    lifetime_budget = serializers.FloatField(required=False, min_value=0)
     
     bid_strategy = serializers.ChoiceField(
         choices=[
@@ -324,3 +324,9 @@ class AdSetUpdateSerializer(serializers.Serializer):
     
     # Bid Amount (If manual bidding is used)
     bid_amount = serializers.IntegerField(required=False)
+
+
+
+class AdSetToggleSerializer(serializers.Serializer):
+    adset_id = serializers.CharField(required=True)
+    status = serializers.ChoiceField(choices=['ACTIVE', 'PAUSED', 'ARCHIVED'])
