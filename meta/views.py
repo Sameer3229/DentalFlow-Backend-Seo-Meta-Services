@@ -597,179 +597,19 @@ class FacebookManagerViewSet(viewsets.ModelViewSet):
         
 
 #=================================================================================================
-     
-
-    # @action(detail=False, methods=['post'])
-    # def update_campaign(self, request):
-      
-    #     user = request.user
-    #     if user.is_anonymous: user = User.objects.first()
-
-    #     try:
-    #         profile = FacebookProfile.objects.get(user=user)
-    #         access_token = profile.access_token
-    #     except FacebookProfile.DoesNotExist:
-    #         return Response({"error": "Facebook account not connected."}, status=400)
-
-    #     # Validation
-    #     serializer = CampaignUpdateSerializer(data=request.data)
-    #     if not serializer.is_valid():
-    #         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-        
-    #     data = serializer.validated_data
-    #     campaign_id = data['campaign_id']
-    #     params = {}
-
-    #     # Basic Fields
-    #     if 'name' in data: params['name'] = data['name']
-    #     if 'status' in data: params['status'] = data['status']
-
-    #     if 'special_ad_categories' in data:
-    #         special_cats = data['special_ad_categories']
-    #         if not special_cats: params['special_ad_categories'] = ['NONE']
-    #         elif isinstance(special_cats, str): params['special_ad_categories'] = [] if special_cats == 'NONE' else [special_cats]
-    #         elif isinstance(special_cats, list): params['special_ad_categories'] = special_cats
-
-    #     if 'bid_strategy' in data:
-    #         params['bid_strategy'] = data['bid_strategy']
-
-    #     # --- 💰 BUDGET LOGIC ---
-    #     turning_off_cbo = False
-    #     incoming_budget = False
-        
-    #     # 1. Daily Budget
-    #     if 'daily_budget' in data:
-    #         if data['daily_budget'] == 0:
-    #             print("🔻 User wants to DISABLE CBO (Daily Budget)")
-    #             turning_off_cbo = True
-    #         else:
-    #             params['daily_budget'] = int(data['daily_budget'] * 100)
-    #             incoming_budget = True
-
-    #     # 2. Lifetime Budget
-    #     if 'lifetime_budget' in data:
-    #         if data['lifetime_budget'] == 0:
-    #             print("🔻 User wants to DISABLE CBO (Lifetime Budget)")
-    #             turning_off_cbo = True
-    #         else:
-    #             params['lifetime_budget'] = int(data['lifetime_budget'] * 100)
-    #             incoming_budget = True
-
-    #     # Spend Cap
-    #     if 'spend_cap' in data:
-    #         params['spend_cap'] = int(data['spend_cap'] * 100)
-
-    #     try:
-    #         FacebookAdsApi.init(access_token=access_token)
-    #         campaign = Campaign(campaign_id)
-            
-    #         # Current State Check
-    #         try:
-    #             current_data = campaign.api_get(fields=['daily_budget', 'lifetime_budget'])
-    #             is_currently_cbo = 'daily_budget' in current_data or 'lifetime_budget' in current_data
-    #         except:
-    #             is_currently_cbo = False
-
-    #         # --- 🛑 SPECIAL CASE: DISABLING CBO (RAW CALL FIX) 🛑 ---
-            
-    #         if turning_off_cbo:
-    #             print(f"🔻 Executing RAW CALL to Disable CBO for {campaign_id}")
-                
-    #             # 🛠️ FIX: Version Hardcode kar di (SDK error se bachne k liye)
-    #             # 'v20.0' most stable hai, agar purana SDK hai to 'v19.0' bhi chalega
-    #             url = f"https://graph.facebook.com/v20.0/{campaign_id}"
-                
-    #             # Payload: Explicit Nulls
-    #             payload = {
-    #                 'daily_budget': None,     # JSON mein ye 'null' ban jayega
-    #                 'lifetime_budget': None,  # Ye bhi 'null'
-    #                 'bid_strategy': None,     # Ye bhi 'null'
-    #                 'access_token': access_token # Token body mein bhej dein (Safe)
-    #             }
-                
-    #             # Raw Request
-    #             response = requests.post(url, json=payload)
-    #             response_data = response.json()
-                
-    #             if response.status_code == 200:
-    #                 print("✅ CBO Disabled Successfully via Raw Call!")
-                    
-    #                 # Remove keys jo handle ho gayin
-    #                 if 'daily_budget' in params: del params['daily_budget']
-    #                 if 'lifetime_budget' in params: del params['lifetime_budget']
-    #                 if 'bid_strategy' in params: del params['bid_strategy']
-
-    #                 # Agar koi aur field (Name/Status) update karni baqi hai
-    #                 if params: 
-    #                     print(f"🚀 Updating remaining fields: {params}")
-    #                     campaign.api_update(params=params)
-
-    #                 return Response({
-    #                     "message": "Campaign CBO Disabled Successfully!", 
-    #                     "campaign_id": campaign_id, 
-    #                     "status": "UPDATED"
-    #                 }, status=status.HTTP_200_OK)
-    #             else:
-    #                 # Raw Call Error
-    #                 print(f"❌ Raw Call Failed: {response_data}")
-    #                 return Response({
-    #                     "error": "Meta API Error (Raw)", 
-    #                     "details": response_data
-    #                 }, status=400)
-
-    #         # --- LOGIC A: Enabling CBO ---
-    #         elif incoming_budget and not is_currently_cbo:
-    #             print(f"🔀 Auto-Switching Campaign {campaign_id} to CBO Mode.")
-    #             if 'bid_strategy' not in params:
-    #                 params['bid_strategy'] = 'LOWEST_COST_WITHOUT_CAP'
-            
-    #         # --- LOGIC C: ABO Update ---
-    #         elif 'bid_strategy' in params and not incoming_budget:
-    #             if not is_currently_cbo:
-    #                 print(f"⚠️ Removing 'bid_strategy' because Campaign is ABO.")
-    #                 del params['bid_strategy']
-
-    #         # --- STANDARD SDK UPDATE ---
-    #         if params:
-    #             print(f"🚀 Updating Campaign {campaign_id} with SDK Params: {params}")
-    #             campaign.api_update(params=params)
-                
-    #             return Response({
-    #                 "message": "Campaign Updated Successfully!", 
-    #                 "campaign_id": campaign_id, 
-    #                 "updated_fields": list(params.keys()),
-    #                 "status": "UPDATED"
-    #             }, status=status.HTTP_200_OK)
-    #         else:
-    #             return Response({"message": "Nothing to update."}, status=200)
-
-    #     except FacebookRequestError as e:
-    #         return Response({
-    #             "error": "Meta API Error", 
-    #             "message": e.api_error_message(), 
-    #             "details": e.body()
-    #         }, status=400)
-
-    #     except Exception as e:
-    #         return Response({"error": "Internal Server Error", "details": str(e)}, status=500)
-
-
-
-    
 
     @action(detail=False, methods=['post'])
     def update_campaign(self, request):
-      
         user = request.user
-        if user.is_anonymous: user = User.objects.first()
+        if user.is_anonymous: 
+            user = User.objects.first()
 
         try:
             profile = FacebookProfile.objects.get(user=user)
             access_token = profile.access_token
-        except FacebookProfile.DoesNotExist:
+        except Exception:
             return Response({"error": "Facebook account not connected."}, status=400)
 
-        # Validation
         serializer = CampaignUpdateSerializer(data=request.data)
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
@@ -778,105 +618,69 @@ class FacebookManagerViewSet(viewsets.ModelViewSet):
         campaign_id = data['campaign_id']
         params = {}
 
-        # Basic Fields
-        if 'name' in data: params['name'] = data['name']
-        if 'status' in data: params['status'] = data['status']
-
-        if 'special_ad_categories' in data:
-            special_cats = data['special_ad_categories']
-            if not special_cats: params['special_ad_categories'] = ['NONE']
-            elif isinstance(special_cats, str): params['special_ad_categories'] = [] if special_cats == 'NONE' else [special_cats]
-            elif isinstance(special_cats, list): params['special_ad_categories'] = special_cats
-
-        if 'bid_strategy' in data:
-            params['bid_strategy'] = data['bid_strategy']
-
-        # --- 💰 BUDGET LOGIC (Check for Turn OFF attempt) ---
-        turning_off_cbo = False
-        incoming_budget = False
-        
-        # 1. Daily Budget
-        if 'daily_budget' in data:
-            if data['daily_budget'] == 0:
-                turning_off_cbo = True
-            else:
-                params['daily_budget'] = int(data['daily_budget'] * 100)
-                incoming_budget = True
-
-        # 2. Lifetime Budget
-        if 'lifetime_budget' in data:
-            if data['lifetime_budget'] == 0:
-                turning_off_cbo = True
-            else:
-                params['lifetime_budget'] = int(data['lifetime_budget'] * 100)
-                incoming_budget = True
-
-        # Spend Cap
-        if 'spend_cap' in data:
-            params['spend_cap'] = int(data['spend_cap'] * 100)
-
-        # Check Empty
-        if not params and not turning_off_cbo:
-            return Response({"message": "No changes detected."}, status=200)
-
+        # 1. Fetch Current State (Bohat zaroori hai validation ke liye)
         try:
             FacebookAdsApi.init(access_token=access_token)
             campaign = Campaign(campaign_id)
+            current_meta_data = campaign.api_get(fields=['daily_budget', 'lifetime_budget', 'bid_strategy'])
             
-            # Current State Check (Isay pehle call karna zaroori hai)
-            try:
-                current_data = campaign.api_get(fields=['daily_budget', 'lifetime_budget'])
-                is_currently_cbo = 'daily_budget' in current_data or 'lifetime_budget' in current_data
-            except:
-                is_currently_cbo = False
-
-            # --- 🛑 RESTRICTION LOGIC START ---
-
-            # Case 1: User CBO OFF karne ki koshish kar raha hai (0 bhej kar)
-            if turning_off_cbo and is_currently_cbo:
-                return Response({
-                    "error": "Action Not Allowed", 
-                    "message": "You cannot disable Campaign Budget Optimization (CBO) once it is created. Please create a new campaign if you want to use Ad Set budgets."
-                }, status=status.HTTP_400_BAD_REQUEST)
-
-            # Case 2: User CBO ON karne ki koshish kar raha hai (ABO -> CBO)
-            # (Optional: Agar aap chahein to isay bhi rok sakte hain, par filhal allow rakha hai)
-            elif incoming_budget and not is_currently_cbo:
-                 print(f"🔀 Auto-Switching Campaign {campaign_id} to CBO Mode.")
-                 if 'bid_strategy' not in params:
-                    params['bid_strategy'] = 'LOWEST_COST_WITHOUT_CAP'
-
-            # Case 3: ABO Update (Safety Check)
-            elif 'bid_strategy' in params and not incoming_budget:
-                if not is_currently_cbo:
-                    print(f"⚠️ Removing 'bid_strategy' because Campaign is ABO.")
-                    del params['bid_strategy']
-
-            # --- 🛑 RESTRICTION LOGIC END ---
-
-            # --- 5. EXECUTE UPDATE ---
-            if params:
-                print(f"🚀 Updating Campaign {campaign_id} with Params: {params}")
-                campaign.api_update(params=params)
-                
-                return Response({
-                    "message": "Campaign Updated Successfully!", 
-                    "campaign_id": campaign_id, 
-                    "updated_fields": list(params.keys()),
-                    "status": "UPDATED"
-                }, status=status.HTTP_200_OK)
-            else:
-                return Response({"message": "Nothing to update."}, status=200)
-
+            has_daily = 'daily_budget' in current_meta_data
+            has_lifetime = 'lifetime_budget' in current_meta_data
+            is_cbo = has_daily or has_lifetime
         except FacebookRequestError as e:
+            return Response({"error": "Meta API Error", "message": e.api_error_message()}, status=400)
+
+        # 2. Basic Fields Mapping
+        if 'name' in data: params['name'] = data['name']
+        if 'status' in data: params['status'] = data['status']
+        if 'special_ad_categories' in data:
+            params['special_ad_categories'] = data['special_ad_categories']
+
+        # 3. Budget & CBO Validation Logic
+        new_daily = data.get('daily_budget')
+        new_lifetime = data.get('lifetime_budget')
+
+        # Scenario A: Daily se Lifetime (Ya vice versa) switch karne ki koshish
+        if (new_daily and has_lifetime) or (new_lifetime and has_daily):
             return Response({
-                "error": "Meta API Error", 
-                "message": e.api_error_message(), 
-                "details": e.body()
+                "error": "Invalid Action",
+                "message": "Meta does not allow switching between Daily and Lifetime budget. Please create a new campaign."
             }, status=400)
 
+        # Scenario B: CBO Disable karne ki koshish (Budget 0 bhej kar)
+        if (new_daily == 0 or new_lifetime == 0) and is_cbo:
+            return Response({
+                "error": "Action Not Allowed",
+                "message": "CBO cannot be disabled after creation. You can only update the budget amount."
+            }, status=400)
+
+        # Scenario C: Budget Update
+        if new_daily and new_daily > 0:
+            params['daily_budget'] = int(new_daily * 100)
+        if new_lifetime and new_lifetime > 0:
+            params['lifetime_budget'] = int(new_lifetime * 100)
+
+        # 4. Bid Strategy Logic
+        if 'bid_strategy' in data:
+            if is_cbo or (new_daily or new_lifetime): # Only if CBO is active or being enabled
+                params['bid_strategy'] = data['bid_strategy']
+
+        # 5. Final Update Call
+        if not params:
+            return Response({"message": "No valid changes detected."}, status=200)
+
+        try:
+            campaign.api_update(params=params)
+            return Response({
+                "message": "Campaign updated successfully!",
+                "campaign_id": campaign_id,
+                "updated_fields": list(params.keys())
+            }, status=status.HTTP_200_OK)
+
+        except FacebookRequestError as e:
+            return Response({"error": "Meta API Error", "message": e.api_error_message()}, status=400)
         except Exception as e:
-            return Response({"error": "Internal Server Error", "details": str(e)}, status=500)
+            return Response({"error": "Internal Error", "details": str(e)}, status=500)
         
 #=================================================================================================
 
